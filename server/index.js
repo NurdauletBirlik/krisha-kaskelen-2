@@ -2,7 +2,6 @@ import path from 'node:path';
 import { config } from './config.js';
 import { openDb } from './db.js';
 import { createApp } from './app.js';
-import { attachSeedPhotos, seed } from './seed.js';
 import { createDgis } from './services/dgis.js';
 import { createGeminiModerator, createModerator, createUncheckedModerator } from './services/moderation.js';
 import { createWorker } from './services/worker.js';
@@ -22,8 +21,6 @@ if (config.moderationProvider) {
 
 const db = openDb(config.dbPath);
 const dgis = createDgis({ key: config.dgisKey, db });
-await seed({ db, dgis, allowDemoAccounts: !config.isProduction });
-attachSeedPhotos({ db, uploadsDir: config.uploadsDir });
 
 const { moderationModel: model, uploadsDir } = config;
 let moderator = null;

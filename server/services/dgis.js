@@ -3,7 +3,6 @@ import { distanceKm } from '../geo.js';
 
 const CATALOG = 'https://catalog.api.2gis.com/3.0/items';
 const REVIEWS = 'https://public-api.reviews.2gis.com/2.0/branches';
-const STATIC_MAP = 'https://static.maps.2gis.com/1.0';
 const MAX_DISTANCE_FROM_SDU_KM = 12;
 const REVIEWS_TTL_MS = 24 * 60 * 60 * 1000;
 const PRECISE_TYPES = new Set(['building', 'branch', 'attraction']);
@@ -105,20 +104,15 @@ export function createDgis({ key, db, fetchImpl = fetch }) {
     return { status: 'ok', rating, count, reviews };
   }
 
-  /** The image is fetched here so the key never reaches the browser. */
-  async function staticMap({ lat, lon, zoom, width, height }) {
-    const url = new URL(STATIC_MAP);
-    url.searchParams.set('s', `${width}x${height}`);
-    url.searchParams.set('c', `${lat},${lon}`);
-    url.searchParams.set('z', String(zoom));
-    url.searchParams.set('key', key);
+  /** Map tiles are fetched here, so the browser only ever talks to this server. */
+  async function tile({ z, x, y }) {
+    const url = new URL(`https://tile${(x + y) % 4}.maps.2gis.com/tiles`);
+    url.search = new URLSearchParams({ x: String(x), y: String(y), z: String(z), v: '1', key });
     const res = await fetchImpl(url, { signal: AbortSignal.timeout(15_000) });
     const type = res.headers.get('content-type') ?? '';
-    if (!res.ok || !type.startsWith('image/')) {
-      throw new DgisError(`2GIS static map returned ${res.status}`);
-    }
+    if (!res.ok || !type.startsWith('image/')) throw new DgisError(`2GIS tile returned ${res.status}`);
     return { type, body: Buffer.from(await res.arrayBuffer()) };
   }
 
-  return { geocode, reviewsForAddress, staticMap };
+  return { geocode, reviewsForAddress, tile };
 }

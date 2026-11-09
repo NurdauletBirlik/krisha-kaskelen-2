@@ -348,7 +348,7 @@ export default function Listing() {
     );
   }
   const { item, sdu } = data;
-  const label = [listingLabel(t, item), item.area ? `${item.area} м²` : null].filter(Boolean).join(', ');
+  const label = [listingLabel(t, item), item.area ? `${item.area} м²` : null].filter(Boolean).join(', ') || item.title;
 
   return (
     <main className="wrap">

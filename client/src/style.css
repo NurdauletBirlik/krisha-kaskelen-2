@@ -576,3 +576,12 @@ button.ph { border: 0; padding: 0; cursor: zoom-in; font: inherit; color: inheri
 
 /* Grid children must be allowed to shrink, or the thumbnail strip widens the page. */
 .detail > div { min-width: 0; }
+
+/* Interactive map */
+.leaflet-box { border-radius: 8px; overflow: hidden; z-index: 0; background: #eef2e6; }
+.leaflet-box .pin-wrap { background: none; border: 0; }
+.leaflet-box .pin { position: absolute; left: 0; top: 0; transform: translate(-50%, -100%); white-space: nowrap; cursor: pointer; animation: none; }
+.leaflet-box .pin:hover, .leaflet-box .pin.active { transform: translate(-50%, -100%) scale(1.18); background: #c0392b; }
+.leaflet-box .pin.sdu { cursor: default; animation: pulse-pin 2.2s 0.5s ease-in-out infinite; }
+.leaflet-box .pin.sdu:hover { background: var(--accent); transform: translate(-50%, -100%); }
+.leaflet-container { font: inherit; }

@@ -50,39 +50,28 @@ Copy `.env.example` to `.env`. The `.env` file must stay out of Git.
 | `MODERATION_MODEL` | Choosing the moderation model | Uses `gemini-flash-lite-latest` or `claude-opus-5-5` |
 | `PORT` | Server port | Uses 3000 |
 
-## Sample data
+## Ads from krisha.kz
 
-The first start creates `data/app.db` with five ads. Three are test ads, one of them for sale. Two are public ads found on domler.kz, which `npm run import` can replace.
-These ads skip AI moderation because they are fixed sample data.
+The site takes its ads from krisha.kz through a CSV file and a `photos` folder made by `krisha_parser.py`, a separate script that is not part of the app. Put both in the project folder, then run:
 
-Two demo accounts exist outside production. Both use the password `demo-password`.
+```bash
+npm run import:krisha
+```
 
-- `owner@example.com` owns the test ads.
-- `tenant@example.com` wrote the sample review.
+The import replaces every earlier imported ad and every test ad, and keeps ads people posted on this site. Phone numbers are removed from the text, up to ten photos are kept per ad, and each ad goes through AI moderation. Ads priced per month become rentals, and the rest become sales.
 
-To start over, stop the server and delete the `data` folder.
+The CSV file and the photos stay out of Git. The krisha.kz agreement forbids copying its listings without written permission, so get that permission before any public launch.
 
 ## Try the rental flow
 
-1. Sign up and press "Rent this" or "Buy this" on an ad.
-2. Send the request with a date and a message.
-3. In another browser, log in as `owner@example.com` and open "Requests".
-4. Accept the request. The ad leaves the search and is marked as rented or sold.
-5. Press "Return to search" on the ad page to open it again.
+Rent and buy requests work for ads that people post on this site. Imported ads link to their source page instead, because their owners are not on this site.
+
+1. Create two accounts. With the first, post an ad.
+2. With the second, press "Rent this" or "Buy this" on that ad and send the request.
+3. With the first account, open "Requests" and accept it. The ad leaves the search and is marked as rented or sold.
+4. Press "Return to search" on the ad page to open it again.
 
 A request does not take payment or create a contract. It passes contact details to the owner and records the decision.
-
-## Telegram import
-
-This reads public channels with your Telegram account. It only searches and reads, and never sends anything.
-
-1. Put `TELEGRAM_API_ID`, `TELEGRAM_API_HASH` and `TELEGRAM_PHONE` from https://my.telegram.org in `.env`. It also needs `GEMINI_API_KEY`.
-2. Run `npm run telegram:qr` once and scan the code in the Telegram app under Settings, Devices. Or run `npm run telegram:login` and enter the code Telegram sends you, usually inside the app and not by SMS.
-3. Run `npm run import:telegram`.
-
-It finds channels by keywords, or reads the ones listed in `TELEGRAM_CHANNELS`. Gemini extracts the rooms, price and address. Phone numbers, usernames and links are removed before anything is sent to Gemini or saved. Each ad links to its original post, keeps up to ten of its photos, and still goes through moderation. Photos are not edited, so a phone number written on a picture stays visible unless moderation rejects the ad. One run adds up to 12 ads, and ads already on the site are not checked again.
-
-The login is stored in `data/telegram.session`. That file gives full access to the Telegram account, so never share or commit it. To revoke it, end the session in Telegram under Settings, Devices.
 
 ## How it works
 
@@ -101,4 +90,4 @@ The login is stored in `data/telegram.session`. That file gives full access to t
 
 ## Photo credits
 
-The hero image and the photos on the test ads come from [Unsplash](https://unsplash.com/license) and are free to use. They are not pictures of the listed apartments, so the test ads label them as example photos. Ads imported from other sites never use them.
+The hero image comes from [Unsplash](https://unsplash.com/license) and is free to use.

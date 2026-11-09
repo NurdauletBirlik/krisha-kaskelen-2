@@ -3,7 +3,6 @@ import { Link, NavLink, Navigate, Outlet, useLocation, useNavigate, useParams } 
 import { api } from '../api.js';
 import { LANGS, LANG_LABELS, translate } from '../i18n.js';
 import { useAuth, useFetch, useI18n, usePolling, useToast } from '../context.jsx';
-import { fitView, project, spreadPins } from '../mapView.js';
 import { PHONE_PATTERN, PHONE_PREFIX, formatPhoneInput } from '../phone.js';
 
 export function Layout() {
@@ -339,59 +338,7 @@ export function ListingCard({ item, index = 0, onFavoriteChange, onHover }) {
   );
 }
 
-const MAP_HEIGHT = 340;
-const MAX_WIDTH = 1280;
-
-/** A 2GIS image from our server, with our own clickable pins on top. */
-const pinLabel = (price) => {
-  if (!price) return '•';
-  return price >= 1_000_000 ? `${(price / 1_000_000).toFixed(1)}M` : `${Math.round(price / 1000)}k`;
-};
-
-export function ListingsMap({ items, sdu, height = MAP_HEIGHT, activeId = null }) {
-  const { t, path } = useI18n();
-  const [box, setBox] = useState(null);
-  const [width, setWidth] = useState(0);
-
-  useEffect(() => {
-    if (!box) return undefined;
-    const update = () => setWidth(Math.min(MAX_WIDTH, Math.floor(box.clientWidth / 20) * 20));
-    update();
-    const observer = new ResizeObserver(update);
-    observer.observe(box);
-    return () => observer.disconnect();
-  }, [box]);
-
-  const located = items.filter((item) => item.point);
-  const view = width && sdu ? fitView([sdu, ...located.map((item) => item.point)], width, height) : null;
-  const pins = view
-    ? spreadPins([sdu, ...located.map((item) => item.point)].map((point) => project(point, view, width, height)))
-    : [];
-  const pinStyle = (index) => ({ left: pins[index].x, top: pins[index].y });
-
-  return (
-    <div ref={setBox}>
-      <div className="mapbox" style={{ width: width || '100%', height }}>
-        {view && (
-          <>
-            <img
-              alt={t('mapAlt')}
-              src={`/api/map/image?lat=${view.center.lat.toFixed(5)}&lon=${view.center.lon.toFixed(5)}&z=${view.zoom}&w=${width}&h=${height}`}
-            />
-            <span className="pin sdu" style={pinStyle(0)} title="SDU University">{t('sduPin')}</span>
-            {located.map((item, index) => (
-              <Link key={item.id} className={`pin${item.id === activeId ? ' active' : ''}`} style={pinStyle(index + 1)} to={path(`/listing/${item.id}`)} title={item.title}>
-                {pinLabel(item.price)}
-              </Link>
-            ))}
-          </>
-        )}
-      </div>
-      <p className="meta mapnote">{t('mapNote')}</p>
-    </div>
-  );
-}
-
+export { default as ListingsMap } from './ListingsMap.jsx';
 
 export function RequireLogin({ children }) {
   const { user, ready } = useAuth();

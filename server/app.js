@@ -16,7 +16,7 @@ const EMAIL = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
 const DISTRICTS = new Set(['near_sdu', 'center', 'new']);
 const LANGS = new Set(['ru', 'en', 'kk']);
 const MAX_PHOTO_BYTES = 5 * 1024 * 1024;
-const MAP_LIMITS = { minZoom: 8, maxZoom: 18, maxWidth: 1280, maxHeight: 720, maxDegreesFromSdu: 1 };
+const MAP_LIMITS = { minZoom: 8, maxZoom: 18, maxDegreesFromSdu: 1 };
 
 class HttpError extends Error {
   constructor(status, code) {
@@ -88,7 +88,7 @@ export function createApp({ db, dgis, uploadsDir, clientDist, secureCookies = fa
     limits: { fileSize: MAX_PHOTO_BYTES, files: 10 },
   });
   const authLimiter = rateLimit({ windowMs: 15 * 60 * 1000, limit: authRateLimit, standardHeaders: true, legacyHeaders: false, message: { error: 'too_many_requests' } });
-  const mapLimiter = rateLimit({ windowMs: 60 * 1000, limit: 60, standardHeaders: true, legacyHeaders: false, message: { error: 'too_many_requests' } });
+  const mapLimiter = rateLimit({ windowMs: 60 * 1000, limit: 1200, standardHeaders: true, legacyHeaders: false, message: { error: 'too_many_requests' } });
 
   const setSession = (res, userId) => {
     const { token, maxAge } = createSession(db, userId);
@@ -559,24 +559,34 @@ export function createApp({ db, dgis, uploadsDir, clientDist, secureCookies = fa
     res.status(201).json({ id: Number(lastInsertRowid), text, isMine: true });
   });
 
-  // Map image. The browser asks this server, so it never sees the 2GIS key.
-  const mapCache = new Map();
-  app.get('/api/map/image', mapLimiter, async (req, res) => {
-    const lat = Number(req.query.lat);
-    const lon = Number(req.query.lon);
-    const zoom = toInt(req.query.z, MAP_LIMITS.minZoom, MAP_LIMITS.maxZoom);
-    const width = toInt(req.query.w, 100, MAP_LIMITS.maxWidth);
-    const height = toInt(req.query.h, 100, MAP_LIMITS.maxHeight);
-    const nearSdu = Math.abs(lat - SDU.lat) <= MAP_LIMITS.maxDegreesFromSdu && Math.abs(lon - SDU.lon) <= MAP_LIMITS.maxDegreesFromSdu;
-    if (!nearSdu || !zoom || !width || !height) throw new HttpError(400, 'invalid_map_request');
-    const cacheKey = [lat.toFixed(5), lon.toFixed(5), zoom, width, height].join('|');
-    let image = mapCache.get(cacheKey);
+  // Map tiles. The browser asks this server, so it never sees the 2GIS key.
+  // Only tiles around Kaskelen are served, so this is not an open proxy.
+  const tileCache = new Map();
+  const tileIndex = (lat, lon, z) => {
+    const n = 2 ** z;
+    const rad = (lat * Math.PI) / 180;
+    return {
+      x: Math.floor(((lon + 180) / 360) * n),
+      y: Math.floor(((1 - Math.log(Math.tan(rad) + 1 / Math.cos(rad)) / Math.PI) / 2) * n),
+    };
+  };
+  app.get('/api/map/tile/:z/:x/:y', mapLimiter, async (req, res) => {
+    const z = toInt(req.params.z, MAP_LIMITS.minZoom, MAP_LIMITS.maxZoom);
+    const x = toInt(req.params.x, 0, 2 ** 18);
+    const y = toInt(req.params.y, 0, 2 ** 18);
+    if (!z || x === null || x === undefined || y === null || y === undefined) throw new HttpError(400, 'invalid_map_request');
+    const d = MAP_LIMITS.maxDegreesFromSdu;
+    const min = tileIndex(SDU.lat + d, SDU.lon - d, z);
+    const max = tileIndex(SDU.lat - d, SDU.lon + d, z);
+    if (x < min.x || x > max.x || y < min.y || y > max.y) throw new HttpError(400, 'invalid_map_request');
+    const cacheKey = `${z}/${x}/${y}`;
+    let image = tileCache.get(cacheKey);
     if (!image) {
-      image = await dgis.staticMap({ lat: lat.toFixed(5), lon: lon.toFixed(5), zoom, width, height });
-      if (mapCache.size >= 200) mapCache.delete(mapCache.keys().next().value);
-      mapCache.set(cacheKey, image);
+      image = await dgis.tile({ z, x, y });
+      if (tileCache.size >= 2000) tileCache.delete(tileCache.keys().next().value);
+      tileCache.set(cacheKey, image);
     }
-    res.set('Cache-Control', 'public, max-age=86400').type(image.type).send(image.body);
+    res.set('Cache-Control', 'public, max-age=604800').type(image.type).send(image.body);
   });
 
   app.use('/api', (_req, _res, next) => next(new HttpError(404, 'not_found')));

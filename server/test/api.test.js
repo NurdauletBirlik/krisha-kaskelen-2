@@ -4,7 +4,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { after, before, beforeEach, describe, it } from 'node:test';
 import { createApp } from '../app.js';
-import { attachSeedPhotos } from '../seed.js';
+import { importKrisha, parseCsv, rowToListing } from '../services/krishaCsv.js';
 import { openDb } from '../db.js';
 import { DgisError } from '../services/dgis.js';
 import { createGeminiModerator, createModerator, createUncheckedModerator, ModerationUnavailable, NO_AI_KEY_REASON } from '../services/moderation.js';
@@ -56,7 +56,7 @@ before(async () => {
   dgis = {
     geocode: async (address) => (address.includes('нет такого') ? null : { lat: 43.2, lon: 76.65 }),
     reviewsForAddress: async () => ({ status: 'unavailable', rating: 4.5, count: 3, reviews: [] }),
-    staticMap: async () => ({ type: 'image/png', body: PNG }),
+    tile: async () => ({ type: 'image/png', body: PNG }),
   };
   const app = createApp({ db, dgis, uploadsDir: tmp, authRateLimit: 100000 });
   await new Promise((resolve) => { server = app.listen(0, resolve); });
@@ -358,12 +358,13 @@ describe('rent and buy requests', () => {
 });
 
 describe('map', () => {
-  it('serves the image and refuses places far from Kaskelen', async () => {
-    const ok = await client()('/api/map/image?lat=43.2&lon=76.65&z=13&w=600&h=300');
+  it('serves tiles around Kaskelen and refuses the rest', async () => {
+    const ok = await client()('/api/map/tile/13/5840/3003');
     assert.equal(ok.status, 200);
     assert.equal(ok.headers.get('content-type'), 'image/png');
-    assert.equal((await client()('/api/map/image?lat=51.5&lon=0&z=13&w=600&h=300')).status, 400);
-    assert.equal((await client()('/api/map/image?lat=43.2&lon=76.65&z=13&w=5000&h=300')).status, 400);
+    assert.equal((await client()('/api/map/tile/13/4096/2730')).status, 400);
+    assert.equal((await client()('/api/map/tile/3/5/3')).status, 400);
+    assert.equal((await client()('/api/map/tile/13/abc/3003')).status, 400);
   });
 });
 
@@ -475,21 +476,6 @@ describe('moderation worker', () => {
   });
 });
 
-describe('seed photos', () => {
-  it('adds example photos to test ads once and leaves other ads alone', () => {
-    const add = db.prepare(`INSERT INTO listings (source_type, title, deal, description) VALUES (?, ?, 'rent', 'd')`);
-    const testId = Number(add.run('test', 'Студия в новом районе').lastInsertRowid);
-    const appId = Number(add.run('app', 'Студия в новом районе').lastInsertRowid);
-    attachSeedPhotos({ db, uploadsDir: tmp });
-    attachSeedPhotos({ db, uploadsDir: tmp });
-    const count = (id) => db.prepare('SELECT COUNT(*) AS n FROM photos WHERE listing_id = ?').get(id).n;
-    assert.equal(count(testId), 3);
-    assert.equal(count(appId), 0);
-    const { filename } = db.prepare('SELECT filename FROM photos WHERE listing_id = ?').get(testId);
-    assert.equal(fs.existsSync(path.join(tmp, filename)), true);
-  });
-});
-
 describe('importer', () => {
   const good = { title: 'Сдам 2-комнатную квартиру 48 м², 130 000 тг', snippet: 'Каскелен, ул. Баталы 25. Звоните +7 701 123 45 67', link: 'https://example.kz/ad/1' };
 
@@ -578,6 +564,7 @@ describe('telegram import', () => {
     assert.equal(toListing({ ...fields, monthlyPrice: 30000000 }, 't', post()), null);
     assert.equal(toListing({ ...fields, address: null }, 't', post()), null);
     assert.equal(toListing({ ...fields, address: 'СДУ' }, 't', post()), null);
+    assert.equal(toListing({ ...fields, address: 'Сду универ артында' }, 't', post()), null);
     assert.equal(toListing({ ...fields, address: '026-й квартал' }, 't', post()).address, '26-й квартал');
     assert.equal(toListing({ ...fields, address: 'Баталы 105' }, 't', post()).address, 'Баталы 105');
     assert.match(toListing({ ...fields, isShared: true }, 't', post()).title, /^Место на подселение/);
@@ -654,5 +641,56 @@ describe('telegram import', () => {
   it('skips ads whose address 2GIS cannot place', async () => {
     const { prepared } = await postsToListings({ posts: [post()], extract: async () => fields, geocode: async () => null, slots: 2, log: silent });
     assert.equal(prepared.length, 0);
+  });
+});
+
+describe('krisha.kz CSV import', () => {
+  const csv = '\uFEFFid,title,price,price_raw,address,date,description,url,photos_count,photos\r\n'
+    + '1001,"2-комнатная квартира · 54 м² · 5/9 этаж",180000,"180 000 〒 в месяц","Каскелен, Абылай хана 1 — у SDU",вчера,"Тёплая, рядом SDU. Звоните +7 701 123 45 67",https://krisha.kz/a/show/1001,2,a | b\r\n'
+    + '1002,"3-комнатная квартира · 78 м²",28500000,"28 500 000 〒","Каскелен, Наурызбай батыра 17",сегодня,"Продаю ""срочно""\nторг",https://krisha.kz/a/show/1002,0,\r\n'
+    + 'bad,нет,1,1,x,x,x,https://evil.example/1,0,\r\n';
+
+  it('reads quoted fields, commas, quotes and line breaks', () => {
+    const rows = parseCsv(csv);
+    assert.equal(rows.length, 3);
+    assert.equal(rows[1].description, 'Продаю "срочно"\nторг');
+    assert.equal(rows[0].address, 'Каскелен, Абылай хана 1 — у SDU');
+  });
+
+  it('maps rows to listings, guesses rent or sale, strips phones and drops foreign links', () => {
+    const [rent, sale, bad] = parseCsv(csv).map(rowToListing);
+    assert.equal(rent.deal, 'rent');
+    assert.equal(rent.rooms, 2);
+    assert.equal(rent.area, 54);
+    assert.equal(rent.floor, 5);
+    assert.equal(rent.floors, 9);
+    assert.equal(rent.street, 'Абылай хана 1');
+    assert.equal(rent.description.includes('123 45 67'), false);
+    assert.equal(sale.deal, 'buy');
+    assert.equal(sale.price, 28500000);
+    assert.equal(bad, null);
+  });
+
+  it('replaces test and imported ads, keeps ads people posted, and adds photos from the folder', async () => {
+    const owner = await newUser();
+    await owner('/api/listings', { method: 'POST', body: form() });
+    db.prepare(`INSERT INTO listings (source_type, title, deal, description, status) VALUES ('test', 't', 'rent', 'd', 'approved'), ('import', 'i', 'rent', 'd', 'approved')`).run();
+    const photosDir = fs.mkdtempSync(path.join(os.tmpdir(), 'krisha-photos-'));
+    fs.mkdirSync(path.join(photosDir, '1001'));
+    fs.writeFileSync(path.join(photosDir, '1001', '2.png'), PNG);
+    fs.writeFileSync(path.join(photosDir, '1001', '1.png'), PNG);
+    fs.writeFileSync(path.join(photosDir, '1001', 'notes.txt'), 'x');
+    const result = await importKrisha({ db, rows: parseCsv(csv), photosDir, uploadsDir: tmp, geocode: async () => ({ lat: 43.2, lon: 76.66 }) });
+    assert.deepEqual(result, { imported: 2, removed: 2, photos: 2 });
+    const types = db.prepare('SELECT source_type, source_name, status FROM listings ORDER BY id').all().map((row) => `${row.source_type}:${row.source_name}:${row.status}`);
+    assert.deepEqual(types, ['app:null:pending', 'import:krisha.kz:pending', 'import:krisha.kz:pending']);
+    fs.rmSync(photosDir, { recursive: true, force: true });
+  });
+
+  it('leaves the site alone when the file has nothing usable', async () => {
+    db.prepare(`INSERT INTO listings (source_type, title, deal, description, status) VALUES ('test', 't', 'rent', 'd', 'approved')`).run();
+    const result = await importKrisha({ db, rows: [], photosDir: tmp, uploadsDir: tmp, geocode: async () => null });
+    assert.equal(result.imported, 0);
+    assert.equal(db.prepare(`SELECT COUNT(*) AS n FROM listings WHERE source_type = 'test'`).get().n, 1);
   });
 });

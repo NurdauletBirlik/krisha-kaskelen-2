@@ -90,7 +90,8 @@ export function toListing(extracted, text, { username, messageId }) {
   // People write "026 квартал", but 2GIS only recognises "26 квартал".
   const street = address?.trim().replace(/(?<!\d)0+(?=\d)/g, '');
   // "Near SDU" is not an address, and it would show a false distance of zero.
-  if (!street || street.length < 3 || /^(?:район\s+)?(?:сду|sdu)$/i.test(street)) return null;
+  // Phrases like "behind SDU" name no street or building, so the map would lie.
+  if (!street || street.length < 3 || (/сду|sdu/i.test(street) && !/\d/.test(street))) return null;
   const apartment = rooms === 0 ? 'Студия' : rooms ? `${Math.min(rooms, 4)}-комнатная квартира` : 'Квартира';
   const kind = isShared ? 'Место на подселение' : apartment;
   return {
