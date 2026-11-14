@@ -13,9 +13,8 @@ export function Layout() {
 
 function LayoutBody() {
   const { lang, t, path } = useI18n();
-  const { user, logout } = useAuth();
+  const { user } = useAuth();
   const location = useLocation();
-  const navigate = useNavigate();
   const rest = location.pathname.replace(/^\/[^/]+/, '') + location.search;
   const dealParam = new URLSearchParams(location.search).get('deal');
   const onHome = location.pathname === path();
@@ -34,15 +33,7 @@ function LayoutBody() {
             <Link className={onHome && dealParam === 'rent' ? 'active' : undefined} to={path('?deal=rent')}>{t('rent')}</Link>
             <Link className={onHome && dealParam === 'buy' ? 'active' : undefined} to={path('?deal=buy')}>{t('buy')}</Link>
             <NavLink to={path('/post')}>{t('post')}</NavLink>
-            {user ? (
-              <>
-                <NavLink to={path('/favorites')}>{t('favorites')}</NavLink>
-                <NavLink to={path('/requests')}>{t('requests')}<RequestsBadge /></NavLink>
-                <NavLink to={path('/chats')}>{t('chats')}</NavLink>
-                <NavLink to={path('/mine')}>{t('myListings')}</NavLink>
-                <button type="button" onClick={() => logout().then(() => navigate(path()))}>{t('logout')}</button>
-              </>
-            ) : (
+            {!user && (
               <>
                 <NavLink to={path('/login')}>{t('login')}</NavLink>
                 <NavLink to={path('/register')}>{t('signup')}</NavLink>
@@ -54,6 +45,7 @@ function LayoutBody() {
               <Link key={code} to={`/${code}${rest}`} hrefLang={code} aria-current={code === lang ? 'true' : undefined}>{LANG_LABELS[code]}</Link>
             ))}
           </span>
+          {user && <ProfileMenu />}
         </div>
       </header>
       <div className="page" key={location.pathname}><Outlet /></div>
@@ -62,11 +54,56 @@ function LayoutBody() {
   );
 }
 
-function RequestsBadge() {
+/** The profile photo, or the first letter of the name when there is none. */
+export function Avatar({ user, src = user.avatar, big = false }) {
+  const className = `avatar${big ? ' big' : ''}`;
+  if (src) return <img className={className} src={src} alt="" />;
+  return <span className={className} aria-hidden="true">{user.name.trim().charAt(0).toUpperCase()}</span>;
+}
+
+function ProfileMenu() {
+  const { t, path } = useI18n();
+  const { user, logout } = useAuth();
+  const navigate = useNavigate();
+  const [open, setOpen] = useState(false);
+  const box = useRef(null);
   const { data, reload } = useFetch('/requests');
   usePolling(reload, 10_000);
-  const count = data?.incoming.filter((item) => item.status === 'pending').length ?? 0;
-  return count > 0 ? <span className="badge">{count}</span> : null;
+  const pending = data?.incoming.filter((item) => item.status === 'pending').length ?? 0;
+  const badge = pending > 0 ? <span className="badge">{pending}</span> : null;
+
+  useEffect(() => {
+    if (!open) return undefined;
+    const close = (event) => {
+      if (event.type === 'keydown' ? event.key === 'Escape' : !box.current.contains(event.target)) setOpen(false);
+    };
+    document.addEventListener('pointerdown', close);
+    document.addEventListener('keydown', close);
+    return () => {
+      document.removeEventListener('pointerdown', close);
+      document.removeEventListener('keydown', close);
+    };
+  }, [open]);
+
+  return (
+    <div className="profile" ref={box}>
+      <button className="profile-btn" type="button" aria-haspopup="menu" aria-expanded={open} aria-label={t('accountMenu')} onClick={() => setOpen(!open)}>
+        <Avatar user={user} />
+        <span className="profile-name">{user.name}</span>
+        {badge}
+      </button>
+      {open && (
+        <div className="profile-menu pop" role="menu" onClick={() => setOpen(false)}>
+          <NavLink role="menuitem" to={path('/settings')}>{t('settings')}</NavLink>
+          <NavLink role="menuitem" to={path('/favorites')}>{t('favorites')}</NavLink>
+          <NavLink role="menuitem" to={path('/mine')}>{t('myListings')}</NavLink>
+          <NavLink role="menuitem" to={path('/requests')}>{t('requests')}{badge}</NavLink>
+          <NavLink role="menuitem" to={path('/chats')}>{t('chats')}</NavLink>
+          <button role="menuitem" type="button" onClick={() => logout().then(() => navigate(path()))}>{t('logout')}</button>
+        </div>
+      )}
+    </div>
+  );
 }
 
 /** Keeps a phone number in one format and stops at its full length. */

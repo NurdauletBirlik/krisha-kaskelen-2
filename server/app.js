@@ -7,7 +7,7 @@ import { rateLimit } from 'express-rate-limit';
 import { SDU } from './config.js';
 import { transaction } from './db.js';
 import { distanceKm } from './geo.js';
-import { COOKIE, createSession, destroySession, hashPassword, loadUser, readCookie, requireUser, verifyPassword } from './auth.js';
+import { COOKIE, USER_COLUMNS, createSession, destroySession, hashPassword, loadUser, readCookie, requireUser, verifyPassword } from './auth.js';
 import { normalizePhone } from './phone.js';
 import { sniffImage } from './images.js';
 import { DgisError } from './services/dgis.js';
@@ -17,6 +17,7 @@ const DISTRICTS = new Set(['near_sdu', 'center', 'new']);
 const LANGS = new Set(['ru', 'en', 'kk']);
 const MAX_PHOTO_BYTES = 5 * 1024 * 1024;
 const MAP_LIMITS = { minZoom: 8, maxZoom: 18, maxDegreesFromSdu: 1 };
+const STREAM_PING_MS = 25_000;
 
 class HttpError extends Error {
   constructor(status, code) {
@@ -172,6 +173,8 @@ export function createApp({ db, dgis, uploadsDir, clientDist, secureCookies = fa
   }
 
   // Auth
+  const publicUser = (id) => db.prepare(`SELECT ${USER_COLUMNS} FROM users WHERE id = ?`).get(id);
+
   app.post('/api/auth/register', authLimiter, async (req, res) => {
     const name = String(req.body?.name ?? '').trim();
     const phone = normalizePhone(req.body?.phone);
@@ -190,7 +193,7 @@ export function createApp({ db, dgis, uploadsDir, clientDist, secureCookies = fa
       throw error;
     }
     setSession(res, Number(id));
-    res.status(201).json({ user: { id: Number(id), name, phone, email } });
+    res.status(201).json({ user: publicUser(id) });
   });
 
   app.post('/api/auth/login', authLimiter, async (req, res) => {
@@ -199,7 +202,7 @@ export function createApp({ db, dgis, uploadsDir, clientDist, secureCookies = fa
     const user = db.prepare('SELECT * FROM users WHERE email = ? OR phone = ?').get(login, normalizePhone(login) ?? login);
     if (!user || !(await verifyPassword(password, user.password_hash))) throw new HttpError(401, 'bad_credentials');
     setSession(res, user.id);
-    res.json({ user: { id: user.id, name: user.name, phone: user.phone, email: user.email } });
+    res.json({ user: publicUser(user.id) });
   });
 
   app.post('/api/auth/logout', (req, res) => {
@@ -209,6 +212,43 @@ export function createApp({ db, dgis, uploadsDir, clientDist, secureCookies = fa
   });
 
   app.get('/api/auth/me', (req, res) => res.json({ user: req.user }));
+
+  app.put('/api/auth/profile', requireUser, upload.single('photo'), (req, res) => {
+    const name = String(req.body?.name ?? '').trim();
+    const phone = normalizePhone(req.body?.phone);
+    if (name.length < 2 || name.length > 100) throw Object.assign(new HttpError(422, 'invalid_field'), { field: 'name' });
+    if (!phone) throw Object.assign(new HttpError(422, 'invalid_field'), { field: 'phone' });
+    const type = req.file ? sniffImage(req.file.buffer) : null;
+    if (req.file && !type) throw new HttpError(422, 'invalid_photo');
+
+    const old = db.prepare('SELECT avatar FROM users WHERE id = ?').get(req.user.id).avatar;
+    let avatar = req.body?.removePhoto === '1' ? null : old;
+    if (type) {
+      avatar = `${crypto.randomUUID()}.${type.ext}`;
+      fs.writeFileSync(path.join(uploadsDir, avatar), req.file.buffer);
+    }
+    try {
+      db.prepare('UPDATE users SET name = ?, phone = ?, avatar = ? WHERE id = ?').run(name, phone, avatar, req.user.id);
+    } catch (error) {
+      if (type) fs.rmSync(path.join(uploadsDir, avatar), { force: true });
+      if (String(error.message).includes('UNIQUE')) throw new HttpError(409, 'account_exists');
+      throw error;
+    }
+    if (old && old !== avatar) fs.rmSync(path.join(uploadsDir, old), { force: true });
+    res.json({ user: publicUser(req.user.id) });
+  });
+
+  app.post('/api/auth/password', authLimiter, requireUser, async (req, res) => {
+    const password = String(req.body?.password ?? '');
+    if (password.length < 8 || password.length > 200) throw Object.assign(new HttpError(422, 'invalid_field'), { field: 'password' });
+    const { password_hash: hash } = db.prepare('SELECT password_hash FROM users WHERE id = ?').get(req.user.id);
+    if (!(await verifyPassword(String(req.body?.current ?? ''), hash))) throw new HttpError(403, 'wrong_password');
+    db.prepare('UPDATE users SET password_hash = ? WHERE id = ?').run(await hashPassword(password), req.user.id);
+    // Every other device is logged out, and this one gets a fresh session.
+    db.prepare('DELETE FROM sessions WHERE user_id = ?').run(req.user.id);
+    setSession(res, req.user.id);
+    res.status(204).end();
+  });
 
   // Listings
   app.get('/api/listings', (req, res) => {
@@ -381,6 +421,42 @@ export function createApp({ db, dgis, uploadsDir, clientDist, secureCookies = fa
     res.status(201).json({ status: 'pending' });
   });
 
+  // Live chat. Each open chat page holds one event stream, and a new message is pushed to both sides at once.
+  const streams = new Map();
+
+  app.get('/api/events', requireUser, (req, res) => {
+    res.set({ 'Content-Type': 'text/event-stream', 'Cache-Control': 'no-cache, no-transform', 'X-Accel-Buffering': 'no' });
+    res.flushHeaders();
+    res.write(': connected\n\n');
+    const userId = req.user.id;
+    if (!streams.has(userId)) streams.set(userId, new Set());
+    streams.get(userId).add(res);
+    // A comment line keeps proxies from closing a quiet connection.
+    const ping = setInterval(() => res.write(': ping\n\n'), STREAM_PING_MS);
+    req.on('close', () => {
+      clearInterval(ping);
+      streams.get(userId)?.delete(res);
+      if (streams.get(userId)?.size === 0) streams.delete(userId);
+    });
+  });
+
+  const addMessage = (conversationId, senderId, text) => {
+    const { lastInsertRowid } = db.prepare('INSERT INTO messages (conversation_id, sender_id, text) VALUES (?, ?, ?)').run(conversationId, senderId, text);
+    return Number(lastInsertRowid);
+  };
+
+  function announceMessage(conversationId) {
+    const { renter_id: renterId, owner_id: ownerId } = db
+      .prepare(
+        `SELECT conversations.renter_id, listings.user_id AS owner_id FROM conversations
+         JOIN listings ON listings.id = conversations.listing_id WHERE conversations.id = ?`,
+      )
+      .get(conversationId);
+    for (const userId of new Set([renterId, ownerId])) {
+      for (const stream of streams.get(userId) ?? []) stream.write(`data: ${JSON.stringify({ type: 'message', conversationId })}\n\n`);
+    }
+  }
+
   // Rent and purchase requests
   const openConversation = (listingId, renterId) => {
     db.prepare('INSERT OR IGNORE INTO conversations (listing_id, renter_id) VALUES (?, ?)').run(listingId, renterId);
@@ -402,6 +478,7 @@ export function createApp({ db, dgis, uploadsDir, clientDist, secureCookies = fa
       throw Object.assign(new HttpError(422, 'invalid_field'), { field: 'date' });
     }
 
+    let conversationId = null;
     const id = transaction(db, () => {
       let inserted;
       try {
@@ -413,11 +490,12 @@ export function createApp({ db, dgis, uploadsDir, clientDist, secureCookies = fa
         throw error;
       }
       if (message) {
-        const conversationId = openConversation(listing.id, req.user.id);
-        db.prepare('INSERT INTO messages (conversation_id, sender_id, text) VALUES (?, ?, ?)').run(conversationId, req.user.id, message);
+        conversationId = openConversation(listing.id, req.user.id);
+        addMessage(conversationId, req.user.id, message);
       }
       return Number(inserted.lastInsertRowid);
     });
+    if (conversationId) announceMessage(conversationId);
     res.status(201).json({ id, status: 'pending' });
   });
 
@@ -555,8 +633,9 @@ export function createApp({ db, dgis, uploadsDir, clientDist, secureCookies = fa
     const conversation = conversationFor(req.params.id, req.user.id);
     const text = String(req.body?.text ?? '').trim();
     if (text.length < 1 || text.length > 2000) throw Object.assign(new HttpError(422, 'invalid_field'), { field: 'text' });
-    const { lastInsertRowid } = db.prepare('INSERT INTO messages (conversation_id, sender_id, text) VALUES (?, ?, ?)').run(conversation.id, req.user.id, text);
-    res.status(201).json({ id: Number(lastInsertRowid), text, isMine: true });
+    const id = addMessage(conversation.id, req.user.id, text);
+    announceMessage(conversation.id);
+    res.status(201).json({ id, text, isMine: true });
   });
 
   // Map tiles. The browser asks this server, so it never sees the 2GIS key.

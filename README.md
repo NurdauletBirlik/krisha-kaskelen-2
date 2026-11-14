@@ -34,7 +34,8 @@ npm run lint
 - **Rent and buy requests:** a user sends a request with a date and a message, and the owner accepts or declines it.
 - **Ad management:** owners can post, edit and delete their own ads. Deleting also removes the ad's photos, reviews, requests and chats.
 - **Reviews:** users can leave one review per ad, and never on their own ad.
-- **Favorites and chat:** users can save ads and message owners.
+- **Profile:** the photo and name at the top right open a menu with settings, favorites, own ads, requests and messages. In settings a user can change the name, phone, profile photo and password.
+- **Favorites and chat:** users can save ads and message owners. Messages arrive live, without a page refresh.
 - **Moderation:** an AI model approves or rejects each ad and review, and gives a reason.
 
 ## Configuration

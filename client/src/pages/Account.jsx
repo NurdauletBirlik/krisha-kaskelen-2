@@ -1,10 +1,9 @@
 import { useEffect, useRef, useState } from 'react';
 import { Link, useParams } from 'react-router-dom';
 import { api } from '../api.js';
-import { useFetch, useI18n, usePolling, useToast } from '../context.jsx';
-import { DeleteListingButton, ListingCard, RequireLogin, SkeletonCards, Status, formatPrice } from '../components/Shared.jsx';
-
-const CHAT_POLL_MS = 5000;
+import { useAuth, useFetch, useI18n, useLiveChat, usePolling, useToast } from '../context.jsx';
+import { formatPhoneInput } from '../phone.js';
+import { Avatar, DeleteListingButton, ListingCard, PhoneInput, RequireLogin, SkeletonCards, Status, formatPrice } from '../components/Shared.jsx';
 
 function FavoritesBody() {
   const { t } = useI18n();
@@ -122,6 +121,7 @@ export function Requests() {
 function ChatsBody() {
   const { t, path } = useI18n();
   const { data, loading, error, reload } = useFetch('/conversations');
+  useLiveChat(reload);
   return (
     <section className="panel">
       <Status loading={loading && !data} error={error} onRetry={reload} />
@@ -150,7 +150,7 @@ function ChatBody() {
   const list = useRef(null);
   const count = data?.items.length ?? 0;
 
-  usePolling(reload, CHAT_POLL_MS);
+  useLiveChat(reload);
 
   useEffect(() => {
     if (list.current) list.current.scrollTop = list.current.scrollHeight;
@@ -162,7 +162,6 @@ function ChatBody() {
     try {
       await api(`/conversations/${id}/messages`, { method: 'POST', body: { text } });
       setText('');
-      reload();
     } catch (failure) {
       setSendError(failure);
     }
@@ -190,4 +189,111 @@ function ChatBody() {
 export function Chat() {
   const { t } = useI18n();
   return <main className="wrap formpage"><h1>{t('chats')}</h1><RequireLogin><ChatBody /></RequireLogin></main>;
+}
+
+function ProfileForm() {
+  const { t, tError } = useI18n();
+  const { user, setUser } = useAuth();
+  const toast = useToast();
+  const [values, setValues] = useState({ name: user.name, phone: formatPhoneInput(user.phone) });
+  const [photo, setPhoto] = useState(null);
+  const [removePhoto, setRemovePhoto] = useState(false);
+  const [preview, setPreview] = useState(null);
+  const [error, setError] = useState(null);
+  const change = (event) => setValues({ ...values, [event.target.name]: event.target.value });
+
+  useEffect(() => {
+    if (!photo) return undefined;
+    const url = URL.createObjectURL(photo);
+    setPreview(url);
+    return () => {
+      URL.revokeObjectURL(url);
+      setPreview(null);
+    };
+  }, [photo]);
+
+  async function submit(event) {
+    event.preventDefault();
+    setError(null);
+    const body = new FormData();
+    body.set('name', values.name);
+    body.set('phone', values.phone);
+    if (photo) body.set('photo', photo);
+    else if (removePhoto) body.set('removePhoto', '1');
+    try {
+      const data = await api('/auth/profile', { method: 'PUT', body });
+      setUser(data.user);
+      setPhoto(null);
+      setRemovePhoto(false);
+      toast(t('toastProfileSaved'));
+    } catch (failure) {
+      setError(failure);
+    }
+  }
+
+  const shown = preview ?? (removePhoto ? null : user.avatar);
+  return (
+    <section className="panel">
+      <h2>{t('profile')}</h2>
+      <form className="stack" onSubmit={submit}>
+        <div className="avatar-edit">
+          <Avatar user={user} src={shown} big />
+          <div className="actions">
+            <label className="btn ghost small">
+              {t('choosePhoto')}
+              <input className="visually-hidden" type="file" accept="image/jpeg,image/png,image/webp" aria-label={t('profilePhoto')} onChange={(event) => { setPhoto(event.target.files[0] ?? null); setRemovePhoto(false); event.target.value = ''; }} />
+            </label>
+            {shown && <button className="btn danger small" type="button" onClick={() => { setPhoto(null); setRemovePhoto(true); }}>{t('removePhoto')}</button>}
+          </div>
+        </div>
+        <label>{t('fullName')}<input type="text" name="name" value={values.name} onChange={change} required minLength={2} maxLength={100} autoComplete="name" /></label>
+        <label>{t('phone')}<PhoneInput value={values.phone} onChange={change} required autoComplete="tel" /></label>
+        <label>{t('email')}<input type="email" value={user.email} disabled /></label>
+        {error && <p className="error-text" role="alert">{tError(error)}</p>}
+        <button className="btn" type="submit">{t('save')}</button>
+      </form>
+    </section>
+  );
+}
+
+function PasswordForm() {
+  const { t, tError } = useI18n();
+  const toast = useToast();
+  const empty = { current: '', password: '', password2: '' };
+  const [values, setValues] = useState(empty);
+  const [error, setError] = useState(null);
+  const change = (event) => setValues({ ...values, [event.target.name]: event.target.value });
+  const mismatch = values.password2 !== '' && values.password !== values.password2;
+
+  async function submit(event) {
+    event.preventDefault();
+    if (mismatch) return;
+    setError(null);
+    try {
+      await api('/auth/password', { method: 'POST', body: { current: values.current, password: values.password } });
+      setValues(empty);
+      toast(t('toastPasswordChanged'));
+    } catch (failure) {
+      setError(failure);
+    }
+  }
+
+  return (
+    <section className="panel">
+      <h2>{t('changePassword')}</h2>
+      <form className="stack" onSubmit={submit}>
+        <label>{t('currentPassword')}<input type="password" name="current" value={values.current} onChange={change} required maxLength={200} autoComplete="current-password" /></label>
+        <label>{t('newPassword')}<input type="password" name="password" value={values.password} onChange={change} minLength={8} maxLength={200} required autoComplete="new-password" /><span className="hint">{t('atLeast8')}</span></label>
+        <label>{t('repeatPassword')}<input type="password" name="password2" value={values.password2} onChange={change} minLength={8} maxLength={200} required autoComplete="new-password" /></label>
+        {mismatch && <p className="error-text" role="alert">{t('passwordsDiffer')}</p>}
+        {error && <p className="error-text" role="alert">{tError(error)}</p>}
+        <button className="btn" type="submit" disabled={mismatch}>{t('changePassword')}</button>
+      </form>
+    </section>
+  );
+}
+
+export function Settings() {
+  const { t } = useI18n();
+  return <main className="wrap formpage"><h1>{t('settings')}</h1><RequireLogin><ProfileForm /><PasswordForm /></RequireLogin></main>;
 }

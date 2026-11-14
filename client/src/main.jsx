@@ -7,7 +7,7 @@ import Home from './pages/Home.jsx';
 import Listing from './pages/Listing.jsx';
 import PostForm from './pages/PostForm.jsx';
 import { Login, Register } from './pages/Auth.jsx';
-import { Chat, Chats, Favorites, MyListings, Requests } from './pages/Account.jsx';
+import { Chat, Chats, Favorites, MyListings, Requests, Settings } from './pages/Account.jsx';
 import './style.css';
 
 createRoot(document.getElementById('root')).render(
@@ -24,6 +24,7 @@ createRoot(document.getElementById('root')).render(
             <Route path="post" element={<PostForm />} />
             <Route path="login" element={<Login />} />
             <Route path="register" element={<Register />} />
+            <Route path="settings" element={<Settings />} />
             <Route path="favorites" element={<Favorites />} />
             <Route path="mine" element={<MyListings />} />
             <Route path="requests" element={<Requests />} />

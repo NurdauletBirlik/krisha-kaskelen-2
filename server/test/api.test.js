@@ -2,6 +2,7 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
+import { DatabaseSync } from 'node:sqlite';
 import { after, before, beforeEach, describe, it } from 'node:test';
 import { createApp } from '../app.js';
 import { importKrisha, parseCsv, rowToListing } from '../services/krishaCsv.js';
@@ -24,7 +25,7 @@ let server, base, db, tmp, dgis;
 
 function client() {
   let cookie = '';
-  return async (url, { method = 'GET', json, body } = {}) => {
+  const call = async (url, { method = 'GET', json, body } = {}) => {
     const res = await fetch(`${base}${url}`, {
       method,
       headers: { ...(cookie ? { cookie } : {}), ...(json ? { 'content-type': 'application/json' } : {}) },
@@ -37,6 +38,8 @@ function client() {
     try { data = JSON.parse(text); } catch { data = text; }
     return { status: res.status, data, headers: res.headers };
   };
+  call.cookie = () => cookie;
+  return call;
 }
 
 let serial = 0;
@@ -84,6 +87,59 @@ describe('auth', () => {
     assert.equal((await client()('/api/auth/register', { method: 'POST', json: { name: 'Другой', phone: '+77001234567', email: 'b@example.com', password: 'password123' } })).status, 409);
     await call('/api/auth/logout', { method: 'POST' });
     assert.equal((await call('/api/auth/me')).data.user, null);
+  });
+
+  it('edits the profile, keeps a profile photo and changes the password', async () => {
+    const call = await newUser();
+    const other = await newUser();
+    const { email, phone: otherPhone } = (await other('/api/auth/me')).data.user;
+    const profile = (fields, photo) => {
+      const data = new FormData();
+      for (const [key, value] of Object.entries(fields)) data.set(key, value);
+      if (photo) data.set('photo', new Blob([photo], { type: 'image/png' }), 'me.png');
+      return data;
+    };
+    assert.equal((await client()('/api/auth/profile', { method: 'PUT', body: profile({ name: 'Гость', phone: '+77009998877' }) })).status, 401);
+    assert.equal((await call('/api/auth/profile', { method: 'PUT', body: profile({ name: 'Я', phone: '+77009998877' }) })).data.field, 'name');
+    assert.equal((await call('/api/auth/profile', { method: 'PUT', body: profile({ name: 'Новое Имя', phone: otherPhone }) })).status, 409);
+    assert.equal((await call('/api/auth/profile', { method: 'PUT', body: profile({ name: 'Новое Имя', phone: '+77009998877' }, Buffer.from('not an image')) })).status, 422);
+
+    const saved = await call('/api/auth/profile', { method: 'PUT', body: profile({ name: 'Новое Имя', phone: '+7 700 999 88 77' }, PNG) });
+    assert.equal(saved.status, 200);
+    assert.equal(saved.data.user.name, 'Новое Имя');
+    assert.equal(saved.data.user.phone, '+7 700 999 88 77');
+    assert.match(saved.data.user.avatar, /^\/uploads\/[\w-]+\.png$/);
+    const file = path.join(tmp, path.basename(saved.data.user.avatar));
+    assert.ok(fs.existsSync(file));
+    assert.equal((await call('/api/auth/me')).data.user.avatar, saved.data.user.avatar);
+    const kept = await call('/api/auth/profile', { method: 'PUT', body: profile({ name: 'Новое Имя', phone: '+77009998877' }) });
+    assert.equal(kept.data.user.avatar, saved.data.user.avatar);
+    const removed = await call('/api/auth/profile', { method: 'PUT', body: profile({ name: 'Новое Имя', phone: '+77009998877', removePhoto: '1' }) });
+    assert.equal(removed.data.user.avatar, null);
+    assert.equal(fs.existsSync(file), false);
+
+    const secondDevice = client();
+    await secondDevice('/api/auth/login', { method: 'POST', json: { login: '+77009998877', password: 'password123' } });
+    assert.equal((await call('/api/auth/password', { method: 'POST', json: { current: 'wrong-pass', password: 'new-password1' } })).status, 403);
+    assert.equal((await call('/api/auth/password', { method: 'POST', json: { current: 'password123', password: 'short' } })).data.field, 'password');
+    assert.equal((await call('/api/auth/password', { method: 'POST', json: { current: 'password123', password: 'new-password1' } })).status, 204);
+    assert.equal((await call('/api/auth/me')).data.user.name, 'Новое Имя');
+    assert.equal((await secondDevice('/api/auth/me')).data.user, null);
+    assert.equal((await client()('/api/auth/login', { method: 'POST', json: { login: '+77009998877', password: 'password123' } })).status, 401);
+    assert.equal((await client()('/api/auth/login', { method: 'POST', json: { login: '+77009998877', password: 'new-password1' } })).status, 200);
+    assert.equal((await other('/api/auth/me')).data.user.email, email);
+  });
+
+  it('adds the profile photo column to a database made before it existed', () => {
+    const file = path.join(tmp, 'old.db');
+    const old = new DatabaseSync(file);
+    old.exec(`CREATE TABLE users (id INTEGER PRIMARY KEY, name TEXT NOT NULL, phone TEXT NOT NULL UNIQUE, email TEXT NOT NULL UNIQUE, password_hash TEXT NOT NULL, created_at TEXT NOT NULL DEFAULT (datetime('now')));
+      INSERT INTO users (name, phone, email, password_hash) VALUES ('Имя', '+77000000000', 'a@b.kz', 'x');`);
+    old.close();
+    const upgraded = openDb(file);
+    assert.deepEqual({ ...upgraded.prepare('SELECT name, avatar FROM users').get() }, { name: 'Имя', avatar: null });
+    upgraded.close();
+    openDb(file).close();
   });
 });
 
@@ -228,6 +284,38 @@ describe('favorites and chat', () => {
     const stranger = await newUser();
     assert.equal((await stranger(`/api/conversations/${id}/messages`)).status, 404);
     assert.equal((await stranger(`/api/conversations/${id}/messages`, { method: 'POST', json: { text: 'Привет' } })).status, 404);
+  });
+
+  it('pushes a new message to both sides at once, and to nobody else', async () => {
+    assert.equal((await fetch(`${base}/api/events`)).status, 401);
+    const owner = await newUser();
+    const { data } = await owner('/api/listings', { method: 'POST', body: form() });
+    approve(data.item.id);
+    const renter = await newUser();
+    const stranger = await newUser();
+    const { data: { id } } = await renter(`/api/listings/${data.item.id}/conversation`, { method: 'POST' });
+
+    const abort = new AbortController();
+    const listen = async (user) => {
+      const res = await fetch(`${base}/api/events`, { headers: { cookie: user.cookie() }, signal: abort.signal });
+      assert.match(res.headers.get('content-type'), /text\/event-stream/);
+      const events = [];
+      (async () => {
+        const decoder = new TextDecoder();
+        for await (const chunk of res.body) {
+          for (const line of decoder.decode(chunk).split('\n')) if (line.startsWith('data: ')) events.push(JSON.parse(line.slice(6)));
+        }
+      })().catch(() => {});
+      return events;
+    };
+    const [ownerEvents, renterEvents, strangerEvents] = [await listen(owner), await listen(renter), await listen(stranger)];
+
+    await renter(`/api/conversations/${id}/messages`, { method: 'POST', json: { text: 'Здравствуйте' } });
+    await new Promise((resolve) => { setTimeout(resolve, 100); });
+    abort.abort();
+    assert.deepEqual(ownerEvents, [{ type: 'message', conversationId: id }]);
+    assert.deepEqual(renterEvents, [{ type: 'message', conversationId: id }]);
+    assert.deepEqual(strangerEvents, []);
   });
 });
 

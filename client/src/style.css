@@ -585,3 +585,27 @@ button.ph { border: 0; padding: 0; cursor: zoom-in; font: inherit; color: inheri
 .leaflet-box .pin.sdu { cursor: default; animation: pulse-pin 2.2s 0.5s ease-in-out infinite; }
 .leaflet-box .pin.sdu:hover { background: var(--accent); transform: translate(-50%, -100%); }
 .leaflet-container { font: inherit; }
+
+/* Profile menu and settings */
+.profile { position: relative; }
+.profile-btn { position: relative; display: grid; justify-items: center; gap: 2px; padding: 0; background: none; border: 0; color: inherit; font: inherit; font-size: 0.78rem; line-height: 1.2; cursor: pointer; }
+.profile-btn:focus-visible { outline-color: #fff; }
+.profile-name { max-width: 110px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.profile-btn .badge { position: absolute; top: -4px; left: 50%; margin-left: 8px; }
+.avatar { display: grid; place-items: center; width: 36px; height: 36px; border-radius: 50%; border: 2px solid rgba(255, 255, 255, 0.75); background: var(--accent); color: var(--ink); font-weight: 800; object-fit: cover; }
+.avatar.big { width: 96px; height: 96px; border-color: var(--line); font-size: 2.2rem; }
+.profile-menu { position: absolute; right: 0; top: calc(100% + 8px); z-index: 30; display: grid; min-width: 210px; padding: 6px; background: var(--card); color: var(--ink); border: 1px solid var(--line); border-radius: var(--r); box-shadow: 0 10px 30px rgba(10, 40, 55, 0.22); }
+.profile-menu a, .profile-menu button { display: flex; justify-content: space-between; align-items: center; padding: 9px 12px; border: 0; border-radius: 8px; background: none; color: inherit; font: inherit; text-align: left; cursor: pointer; }
+.profile-menu a:hover, .profile-menu button:hover, .profile-menu a.active { background: var(--bg); }
+.profile-menu button { margin-top: 4px; border-top: 1px solid var(--line); border-radius: 0 0 8px 8px; color: #a82a1d; }
+.avatar-edit { display: flex; align-items: center; gap: 16px; flex-wrap: wrap; }
+.avatar-edit .actions { margin-top: 0; }
+.avatar-edit label.btn { cursor: pointer; }
+.visually-hidden { position: absolute; width: 1px; height: 1px; overflow: hidden; clip-path: inset(50%); }
+@media (max-width: 800px) {
+  header .wrap { gap: 8px 10px; }
+  .logo { font-size: 1.05rem; }
+  .lang { margin-left: auto; }
+  .lang a { padding: 4px 6px; }
+  .profile-name { max-width: 60px; }
+}

@@ -4,6 +4,9 @@ import { promisify } from 'node:util';
 const scrypt = promisify(crypto.scrypt);
 const SESSION_MS = 30 * 24 * 60 * 60 * 1000;
 export const COOKIE = 'sid';
+/** What the site may show about a user. The profile photo becomes a ready URL. */
+export const USER_COLUMNS = `users.id, users.name, users.phone, users.email,
+  CASE WHEN users.avatar IS NULL THEN NULL ELSE '/uploads/' || users.avatar END AS avatar`;
 
 export async function hashPassword(password) {
   const salt = crypto.randomBytes(16);
@@ -49,7 +52,7 @@ export function loadUser(db) {
       req.user =
         db
           .prepare(
-            `SELECT users.id, users.name, users.phone, users.email FROM sessions
+            `SELECT ${USER_COLUMNS} FROM sessions
              JOIN users ON users.id = sessions.user_id
              WHERE sessions.token_hash = ? AND sessions.expires_at > ?`,
           )
